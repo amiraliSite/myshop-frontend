@@ -1,0 +1,2885 @@
+const express = require('express');
+const cors = require('cors');
+const multer = require('multer');
+const XLSX = require('xlsx');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+
+const salesFromWarehouseRouter = require(
+  './salesFromWarehouse.routes',
+);
+
+const salesReportsRouter = require(
+  './salesReports.routes',
+);
+
+const app = express();
+
+const PORT = process.env.PORT || 5000;
+
+const JWT_SECRET =
+  process.env.JWT_SECRET ||
+  'company-panel-secret-change-this-in-production';
+
+// =========================
+// Middleware
+// =========================
+
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+  }),
+);
+
+app.use(express.json());
+
+app.use(express.urlencoded({ extended: true }));
+
+app.use(
+  '/api/sales-from-warehouse',
+  salesFromWarehouseRouter,
+);
+
+app.use('/api/sales-reports', salesReportsRouter);
+
+// =========================
+// Data paths
+// =========================
+
+const DATA_DIR = path.join(__dirname, 'data');
+
+const PRODUCTS_FILE = path.join(DATA_DIR, 'products.json');
+
+const REPRESENTATIVES_FILE = path.join(
+  DATA_DIR,
+  'representatives.json',
+);
+
+const SHIPMENTS_FILE = path.join(DATA_DIR, 'shipments.json');
+
+const ADMINS_FILE = path.join(DATA_DIR, 'admins.json');
+
+const WAREHOUSE_FILE = path.join(DATA_DIR, 'warehouse.json');
+
+const WAREHOUSE_MOVEMENTS_FILE = path.join(
+  DATA_DIR,
+  'warehouseMovements.json',
+);
+
+const REPRESENTATIVE_WAREHOUSES_FILE = path.join(
+  DATA_DIR,
+  'representativeWarehouses.json',
+);
+
+/*
+  فایل جدید:
+  تمام درخواست‌های مرجوعی نماینده‌ها در این فایل ذخیره می‌شوند.
+*/
+const RETURN_REQUESTS_FILE = path.join(
+  DATA_DIR,
+  'returnRequests.json',
+);
+
+const REPRESENTATIVES_DIR = path.join(DATA_DIR, 'representatives');
+
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+
+// =========================
+// Ensure folders and files
+// =========================
+
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+if (!fs.existsSync(REPRESENTATIVES_DIR)) {
+  fs.mkdirSync(REPRESENTATIVES_DIR, { recursive: true });
+}
+
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+const dataFiles = [
+  PRODUCTS_FILE,
+  REPRESENTATIVES_FILE,
+  SHIPMENTS_FILE,
+  ADMINS_FILE,
+  WAREHOUSE_FILE,
+  WAREHOUSE_MOVEMENTS_FILE,
+  REPRESENTATIVE_WAREHOUSES_FILE,
+  RETURN_REQUESTS_FILE,
+];
+
+for (const filePath of dataFiles) {
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify([], null, 2),
+      'utf8',
+    );
+  }
+}
+
+// =========================
+// JSON helpers
+// =========================
+
+const readJsonFile = (filePath, fallback = []) => {
+  try {
+    if (!fs.existsSync(filePath)) {
+      return fallback;
+    }
+
+    const rawData = fs.readFileSync(filePath, 'utf8');
+
+    if (!rawData.trim()) {
+      return fallback;
+    }
+
+    const data = JSON.parse(rawData);
+
+    return Array.isArray(data) ? data : fallback;
+  } catch (error) {
+    console.error(`خطا در خواندن ${filePath}:`, error);
+
+    return fallback;
+  }
+};
+
+const writeJsonFile = (filePath, data) => {
+  try {
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify(data || [], null, 2),
+      'utf8',
+    );
+
+    return true;
+  } catch (error) {
+    console.error(`خطا در ذخیره ${filePath}:`, error);
+
+    return false;
+  }
+};
+
+const readProducts = () => readJsonFile(PRODUCTS_FILE, []);
+
+const writeProducts = (products) => {
+  return writeJsonFile(PRODUCTS_FILE, products);
+};
+
+const readRepresentatives = () => {
+  return readJsonFile(REPRESENTATIVES_FILE, []);
+};
+
+const writeRepresentatives = (representatives) => {
+  return writeJsonFile(REPRESENTATIVES_FILE, representatives);
+};
+
+const readShipments = () => readJsonFile(SHIPMENTS_FILE, []);
+
+const writeShipments = (shipments) => {
+  return writeJsonFile(SHIPMENTS_FILE, shipments);
+};
+
+const readAdmins = () => readJsonFile(ADMINS_FILE, []);
+
+const writeAdmins = (admins) => {
+  return writeJsonFile(ADMINS_FILE, admins);
+};
+
+const readWarehouse = () => readJsonFile(WAREHOUSE_FILE, []);
+
+const writeWarehouse = (warehouse) => {
+  return writeJsonFile(WAREHOUSE_FILE, warehouse);
+};
+
+const readWarehouseMovements = () => {
+  return readJsonFile(WAREHOUSE_MOVEMENTS_FILE, []);
+};
+
+const writeWarehouseMovements = (movements) => {
+  return writeJsonFile(WAREHOUSE_MOVEMENTS_FILE, movements);
+};
+
+const readRepresentativeWarehouses = () => {
+  return readJsonFile(REPRESENTATIVE_WAREHOUSES_FILE, []);
+};
+
+const writeRepresentativeWarehouses = (warehouses) => {
+  return writeJsonFile(
+    REPRESENTATIVE_WAREHOUSES_FILE,
+    warehouses,
+  );
+};
+
+/*
+  helperهای جدید مرجوعی
+*/
+const readReturnRequests = () => {
+  return readJsonFile(RETURN_REQUESTS_FILE, []);
+};
+
+const writeReturnRequests = (returnRequests) => {
+  return writeJsonFile(
+    RETURN_REQUESTS_FILE,
+    returnRequests,
+  );
+};
+
+// =========================
+// General helpers
+// =========================
+
+const toEnglishDigits = (value) => {
+  if (value === null || value === undefined) {
+    return '';
+  }
+
+  return String(value)
+    .replace(/[۰-۹]/g, (digit) => {
+      return String('۰۱۲۳۴۵۶۷۸۹'.indexOf(digit));
+    })
+    .replace(/[٠-٩]/g, (digit) => {
+      return String('٠١٢٣٤٥٦٧٨٩'.indexOf(digit));
+    });
+};
+
+const normalizeValue = (value) => {
+  return toEnglishDigits(value).trim();
+};
+
+const sameValue = (firstValue, secondValue) => {
+  const first = normalizeValue(firstValue);
+  const second = normalizeValue(secondValue);
+
+  return Boolean(first && second && first === second);
+};
+
+const createRandomId = () => {
+  return `${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+};
+
+const getNextRepresentativeId = (representatives) => {
+  const numericIds = representatives
+    .map((representative) => {
+      const id = Number(normalizeValue(representative.id));
+
+      return Number.isInteger(id) && id > 0 ? id : 0;
+    })
+    .filter((id) => id > 0);
+
+  const maximumId =
+    numericIds.length > 0 ? Math.max(...numericIds) : 0;
+
+  return String(maximumId + 1);
+};
+
+const getNumber = (value) => {
+  const normalized = toEnglishDigits(value)
+    .replace(/[,٬،\s]/g, '')
+    .replace(/[^\d.-]/g, '');
+
+  const result = Number(normalized);
+
+  return Number.isFinite(result) ? result : 0;
+};
+
+const getPositiveNumber = (value) => {
+  const result = getNumber(value);
+
+  return result > 0 ? result : 0;
+};
+
+const cleanText = (value, fallback = '') => {
+  const result = String(value ?? '').trim();
+
+  return result || fallback;
+};
+
+const normalizeJalaliDate = (value) => {
+  const normalized = toEnglishDigits(value)
+    .replace(/-/g, '/')
+    .replace(/[^\d/]/g, '');
+
+  const digits = normalized.replace(/\//g, '').slice(0, 8);
+
+  if (digits.length <= 4) {
+    return digits;
+  }
+
+  if (digits.length <= 6) {
+    return `${digits.slice(0, 4)}/${digits.slice(4)}`;
+  }
+
+  return `${digits.slice(0, 4)}/${digits.slice(4, 6)}/${digits.slice(
+    6,
+    8,
+  )}`;
+};
+
+const isValidJalaliDate = (value) => {
+  return /^1[34]\d{2}\/(0[1-9]|1[0-2])\/(0[1-9]|[12]\d|3[01])$/.test(
+    value,
+  );
+};
+
+const getValue = (row, keys) => {
+  for (const key of keys) {
+    if (
+      row[key] !== undefined &&
+      row[key] !== null &&
+      String(row[key]).trim() !== ''
+    ) {
+      return row[key];
+    }
+  }
+
+  return '';
+};
+
+const getFileIcon = (fileName) => {
+  const extension = fileName.split('.').pop()?.toLowerCase() || '';
+
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(extension)) {
+    return '🖼️';
+  }
+
+  if (extension === 'pdf') {
+    return '📕';
+  }
+
+  if (['doc', 'docx'].includes(extension)) {
+    return '📘';
+  }
+
+  if (['xls', 'xlsx'].includes(extension)) {
+    return '📗';
+  }
+
+  if (['zip', 'rar'].includes(extension)) {
+    return '📦';
+  }
+
+  return '📄';
+};
+
+const fillShipmentRepresentative = (shipment, representatives) => {
+  const shipmentRepresentativeId = normalizeValue(
+    shipment.representativeId,
+  );
+
+  const shipmentRepresentativeCode = normalizeValue(
+    shipment.representativeCode,
+  );
+
+  const representative = representatives.find((item) => {
+    return (
+      sameValue(item.id, shipmentRepresentativeId) ||
+      sameValue(item.code, shipmentRepresentativeCode)
+    );
+  });
+
+  if (!representative) {
+    return shipment;
+  }
+
+  return {
+    ...shipment,
+    representativeId:
+      shipmentRepresentativeId ||
+      String(representative.id || '').trim(),
+    representativeName:
+      String(shipment.representativeName || '').trim() ||
+      String(representative.name || '').trim(),
+    representativeCode:
+      shipmentRepresentativeCode ||
+      String(representative.code || '').trim(),
+    representativeCity:
+      String(shipment.representativeCity || '').trim() ||
+      String(representative.city || '').trim(),
+  };
+};
+
+// =========================
+// Login and security helpers
+// =========================
+
+const createToken = (payload) => {
+  return jwt.sign(payload, JWT_SECRET, {
+    expiresIn: '7d',
+  });
+};
+
+async function createDefaultAdmin() {
+  try {
+    const admins = readAdmins();
+
+    const adminExists = admins.some((admin) => {
+      return normalizeValue(admin.username) === 'admin';
+    });
+
+    if (adminExists) {
+      return;
+    }
+
+    const passwordHash = await bcrypt.hash('admin123', 10);
+
+    admins.push({
+      id: createRandomId(),
+      username: 'admin',
+      name: 'مدیر سیستم',
+      passwordHash,
+      role: 'admin',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    writeAdmins(admins);
+
+    console.log(
+      '✅ ادمین پیش‌فرض ساخته شد | username: admin | password: admin123',
+    );
+  } catch (error) {
+    console.error('خطا در ساخت ادمین پیش‌فرض:', error);
+  }
+}
+
+const authenticateToken = (req, res, next) => {
+  const authorizationHeader = String(
+    req.headers.authorization || '',
+  );
+
+  const token = authorizationHeader.startsWith('Bearer ')
+    ? authorizationHeader.slice(7)
+    : '';
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      error: 'لطفاً ابتدا وارد حساب کاربری شوید.',
+    });
+  }
+
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+
+    return next();
+  } catch (error) {
+    return res.status(401).json({
+      success: false,
+      error: 'توکن ورود نامعتبر یا منقضی شده است.',
+    });
+  }
+};
+
+const requireRepresentative = (req, res, next) => {
+  if (req.user?.role !== 'representative') {
+    return res.status(403).json({
+      success: false,
+      error: 'این بخش فقط برای نماینده قابل دسترسی است.',
+    });
+  }
+
+  return next();
+};
+
+/*
+  middleware جدید:
+  فقط ادمین اجازه دیدن، تأیید و رد درخواست‌های مرجوعی را دارد.
+*/
+const requireAdmin = (req, res, next) => {
+  if (req.user?.role !== 'admin') {
+    return res.status(403).json({
+      success: false,
+      error: 'این بخش فقط برای ادمین قابل دسترسی است.',
+    });
+  }
+
+  return next();
+};
+
+// =========================
+// Central warehouse helpers
+// =========================
+
+const createWarehouseItem = (product, minimumStock = 5) => {
+  return {
+    productId: String(product.id),
+    productName: cleanText(product.name, 'بدون نام'),
+    category: cleanText(product.category, 'عمومی'),
+    quantity: getNumber(product.stock),
+    minimumStock: Math.max(0, getNumber(minimumStock)),
+    updatedAt: new Date().toISOString(),
+  };
+};
+
+const synchronizeWarehouseWithProducts = () => {
+  const products = readProducts();
+  const currentWarehouse = readWarehouse();
+
+  const synchronizedWarehouse = products.map((product) => {
+    const existingWarehouseItem = currentWarehouse.find((item) => {
+      return sameValue(item.productId, product.id);
+    });
+
+    if (!existingWarehouseItem) {
+      return createWarehouseItem(product);
+    }
+
+    return {
+      ...existingWarehouseItem,
+      productId: String(product.id),
+      productName: cleanText(product.name, 'بدون نام'),
+      category: cleanText(product.category, 'عمومی'),
+      quantity: getNumber(existingWarehouseItem.quantity),
+      minimumStock: Math.max(
+        0,
+        getNumber(existingWarehouseItem.minimumStock),
+      ),
+      updatedAt:
+        existingWarehouseItem.updatedAt ||
+        new Date().toISOString(),
+    };
+  });
+
+  const shouldSave =
+    synchronizedWarehouse.length !== currentWarehouse.length ||
+    synchronizedWarehouse.some((item, index) => {
+      return (
+        JSON.stringify(item) !==
+        JSON.stringify(currentWarehouse[index])
+      );
+    });
+
+  if (shouldSave) {
+    writeWarehouse(synchronizedWarehouse);
+  }
+
+  return synchronizedWarehouse;
+};
+
+// =========================
+// Representative warehouse helpers
+// =========================
+
+const getRepresentativeWarehouseStatus = (
+  quantity,
+  minimumStock,
+) => {
+  const safeQuantity = getNumber(quantity);
+  const safeMinimumStock = getNumber(minimumStock);
+
+  if (safeQuantity <= 0) {
+    return 'out';
+  }
+
+  if (safeQuantity <= safeMinimumStock) {
+    return 'low';
+  }
+
+  return 'normal';
+};
+
+const createRepresentativeWarehouse = (representativeId) => {
+  return {
+    representativeId: String(representativeId),
+    items: [],
+    movements: [],
+    updatedAt: new Date().toISOString(),
+  };
+};
+
+const updateRepresentativeWarehouseSummary = (
+  representativeId,
+  warehouse,
+) => {
+  const representatives = readRepresentatives();
+
+  const representativeIndex = representatives.findIndex(
+    (representative) => {
+      return sameValue(representative.id, representativeId);
+    },
+  );
+
+  if (representativeIndex === -1) {
+    return;
+  }
+
+  const items = Array.isArray(warehouse.items)
+    ? warehouse.items
+    : [];
+
+  const totalItems = items.reduce((sum, item) => {
+    return sum + getNumber(item.quantity);
+  }, 0);
+
+  const totalValue = items.reduce((sum, item) => {
+    return sum + getNumber(item.totalPrice);
+  }, 0);
+
+  representatives[representativeIndex] = {
+    ...representatives[representativeIndex],
+    storeItemsCount: totalItems,
+    storeItemsTotalValue: totalValue,
+    updatedAt: new Date().toISOString(),
+  };
+
+  writeRepresentatives(representatives);
+};
+
+// =========================
+// Return requests helpers
+// =========================
+
+const updateRepresentativeReturnRequestsCount = (
+  representativeId,
+) => {
+  const returnRequests = readReturnRequests();
+
+  const count = returnRequests.filter((request) => {
+    return sameValue(
+      request.representativeId,
+      representativeId,
+    );
+  }).length;
+
+  const representatives = readRepresentatives();
+
+  const representativeIndex = representatives.findIndex(
+    (representative) => {
+      return sameValue(representative.id, representativeId);
+    },
+  );
+
+  if (representativeIndex === -1) {
+    return;
+  }
+
+  representatives[representativeIndex] = {
+    ...representatives[representativeIndex],
+    returnRequestsCount: count,
+    updatedAt: new Date().toISOString(),
+  };
+
+  writeRepresentatives(representatives);
+};
+
+// =========================
+// Multer config
+// =========================
+
+const storage = multer.diskStorage({
+  destination: (req, file, callback) => {
+    callback(null, UPLOADS_DIR);
+  },
+
+  filename: (req, file, callback) => {
+    const safeName = file.originalname.replace(
+      /[^\w.\-آ-ی]/g,
+      '_',
+    );
+
+    callback(null, `${Date.now()}-${safeName}`);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024,
+  },
+});
+
+// =========================
+// Health endpoint
+// =========================
+
+app.get('/api/health', (req, res) => {
+  return res.json({
+    success: true,
+    status: 'ok',
+    message: 'Backend is running!',
+  });
+});
+
+// =========================
+// Authentication API
+// =========================
+
+app.post('/api/auth/admin/login', async (req, res) => {
+  try {
+    const username = normalizeValue(req.body.username);
+    const password = String(req.body.password || '').trim();
+
+    if (!username || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'نام کاربری و رمز عبور را وارد کنید.',
+      });
+    }
+
+    const admins = readAdmins();
+
+    const admin = admins.find((item) => {
+      return normalizeValue(item.username) === username;
+    });
+
+    if (!admin) {
+      return res.status(401).json({
+        success: false,
+        error: 'نام کاربری یا رمز عبور اشتباه است.',
+      });
+    }
+
+    const passwordIsCorrect = await bcrypt.compare(
+      password,
+      admin.passwordHash,
+    );
+
+    if (!passwordIsCorrect) {
+      return res.status(401).json({
+        success: false,
+        error: 'نام کاربری یا رمز عبور اشتباه است.',
+      });
+    }
+
+    const token = createToken({
+      id: String(admin.id),
+      username: admin.username,
+      role: 'admin',
+    });
+
+    return res.json({
+      success: true,
+      message: 'ورود ادمین با موفقیت انجام شد.',
+      token,
+      user: {
+        id: String(admin.id),
+        username: admin.username,
+        name: admin.name || 'مدیر سیستم',
+        role: 'admin',
+      },
+    });
+  } catch (error) {
+    console.error('خطا در ورود ادمین:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: 'خطا در ورود ادمین.',
+    });
+  }
+});
+
+app.post('/api/auth/representative/login', (req, res) => {
+  try {
+    const name = cleanText(req.body.name);
+    const code = normalizeValue(req.body.code);
+
+    if (!name || !code) {
+      return res.status(400).json({
+        success: false,
+        error: 'نام و کد نمایندگی را وارد کنید.',
+      });
+    }
+
+    const representatives = readRepresentatives();
+
+    const representative = representatives.find((item) => {
+      const savedName = cleanText(item.name);
+      const savedCode = normalizeValue(item.code);
+
+      return savedName === name && savedCode === code;
+    });
+
+    if (!representative) {
+      return res.status(401).json({
+        success: false,
+        error:
+          'نام نماینده یا کد نمایندگی درست نیست. کد جدید را از مدیر دریافت کنید.',
+      });
+    }
+
+    if (representative.status === 'inactive') {
+      return res.status(403).json({
+        success: false,
+        error: 'حساب این نماینده غیرفعال است.',
+      });
+    }
+
+    const token = createToken({
+      id: String(representative.id),
+      representativeId: String(representative.id),
+      role: 'representative',
+    });
+
+    return res.json({
+      success: true,
+      message: 'ورود نماینده با موفقیت انجام شد.',
+      token,
+      user: {
+        id: String(representative.id),
+        representativeId: String(representative.id),
+        name: cleanText(representative.name),
+        code: normalizeValue(representative.code),
+        city: cleanText(representative.city),
+        phone: cleanText(representative.phone),
+        role: 'representative',
+      },
+    });
+  } catch (error) {
+    console.error('خطا در ورود نماینده:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: 'خطا در ورود نماینده.',
+    });
+  }
+});
+
+app.get(
+  '/api/representative/dashboard',
+  authenticateToken,
+  requireRepresentative,
+  (req, res) => {
+    try {
+      const representativeId = String(
+        req.user.representativeId || req.user.id,
+      );
+
+      const representatives = readRepresentatives();
+
+      const representative = representatives.find((item) => {
+        return sameValue(item.id, representativeId);
+      });
+
+      if (!representative) {
+        return res.status(404).json({
+          success: false,
+          error: 'نماینده پیدا نشد.',
+        });
+      }
+
+      const shipments = readShipments()
+        .filter((shipment) => {
+          return sameValue(
+            shipment.representativeId,
+            representativeId,
+          );
+        })
+        .sort((first, second) => {
+          return (
+            new Date(second.createdAt).getTime() -
+            new Date(first.createdAt).getTime()
+          );
+        });
+
+      const warehouses = readRepresentativeWarehouses();
+
+      const warehouse = warehouses.find((item) => {
+        return sameValue(
+          item.representativeId,
+          representativeId,
+        );
+      }) || {
+        representativeId,
+        items: [],
+        movements: [],
+      };
+
+      return res.json({
+        success: true,
+        data: {
+          representative,
+          shipments,
+          warehouse: {
+            items: Array.isArray(warehouse.items)
+              ? warehouse.items
+              : [],
+            movements: Array.isArray(warehouse.movements)
+              ? warehouse.movements
+              : [],
+          },
+        },
+      });
+    } catch (error) {
+      console.error('خطا در داشبورد نماینده:', error);
+
+      return res.status(500).json({
+        success: false,
+        error: 'خطا در دریافت داشبورد نماینده.',
+      });
+    }
+  },
+);
+
+// =========================
+// Return requests API
+// =========================
+
+/*
+  نماینده درخواست مرجوعی ثبت می‌کند.
+  شناسهٔ نماینده هرگز از فرم دریافت نمی‌شود و از JWT می‌آید.
+*/
+app.post(
+  '/api/return-requests',
+  authenticateToken,
+  requireRepresentative,
+  (req, res) => {
+    try {
+      const representativeId = String(
+        req.user.representativeId || req.user.id,
+      );
+
+      const representatives = readRepresentatives();
+
+      const representative = representatives.find((item) => {
+        return sameValue(item.id, representativeId);
+      });
+
+      if (!representative) {
+        return res.status(404).json({
+          success: false,
+          error: 'نماینده پیدا نشد.',
+        });
+      }
+
+      const title = cleanText(req.body.title);
+
+      const price = getPositiveNumber(req.body.price);
+
+      const returnDate = normalizeJalaliDate(
+        req.body.returnDate || '',
+      );
+
+      const reason = cleanText(req.body.reason);
+
+      if (!title) {
+        return res.status(400).json({
+          success: false,
+          error: 'عنوان کالا الزامی است.',
+        });
+      }
+
+      if (!price) {
+        return res.status(400).json({
+          success: false,
+          error: 'قیمت باید بیشتر از صفر باشد.',
+        });
+      }
+
+      if (!isValidJalaliDate(returnDate)) {
+        return res.status(400).json({
+          success: false,
+          error:
+            'تاریخ مرجوعی باید به صورت شمسی و با فرمت 1405/07/02 باشد.',
+        });
+      }
+
+      if (!reason) {
+        return res.status(400).json({
+          success: false,
+          error: 'دلیل مرجوعی را وارد کنید.',
+        });
+      }
+
+      const returnRequests = readReturnRequests();
+
+      const now = new Date().toISOString();
+
+      const newReturnRequest = {
+        id: createRandomId(),
+
+        representativeId: String(representative.id),
+
+        representativeName: cleanText(
+          representative.name,
+          'نماینده',
+        ),
+
+        representativeCode: cleanText(representative.code),
+
+        title,
+        price,
+        returnDate,
+        reason,
+
+        status: 'pending',
+
+        createdAt: now,
+        updatedAt: now,
+
+        decidedAt: null,
+        adminNote: '',
+        decidedBy: '',
+      };
+
+      returnRequests.unshift(newReturnRequest);
+
+      const saved = writeReturnRequests(returnRequests);
+
+      if (!saved) {
+        return res.status(500).json({
+          success: false,
+          error: 'خطا در ذخیره درخواست مرجوعی.',
+        });
+      }
+
+      updateRepresentativeReturnRequestsCount(
+        representativeId,
+      );
+
+      return res.status(201).json({
+        success: true,
+        message:
+          'درخواست مرجوعی با موفقیت ثبت و برای بررسی ادمین ارسال شد.',
+        data: newReturnRequest,
+      });
+    } catch (error) {
+      console.error('خطا در ثبت درخواست مرجوعی:', error);
+
+      return res.status(500).json({
+        success: false,
+        error:
+          error.message || 'خطا در ثبت درخواست مرجوعی.',
+      });
+    }
+  },
+);
+
+/*
+  نماینده فقط درخواست‌های مرجوعی خودش را می‌بیند.
+*/
+app.get(
+  '/api/return-requests/my',
+  authenticateToken,
+  requireRepresentative,
+  (req, res) => {
+    try {
+      const representativeId = String(
+        req.user.representativeId || req.user.id,
+      );
+
+      const returnRequests = readReturnRequests()
+        .filter((request) => {
+          return sameValue(
+            request.representativeId,
+            representativeId,
+          );
+        })
+        .sort((first, second) => {
+          return (
+            new Date(second.createdAt).getTime() -
+            new Date(first.createdAt).getTime()
+          );
+        });
+
+      return res.json({
+        success: true,
+        count: returnRequests.length,
+        data: returnRequests,
+      });
+    } catch (error) {
+      console.error(
+        'خطا در دریافت درخواست‌های مرجوعی نماینده:',
+        error,
+      );
+
+      return res.status(500).json({
+        success: false,
+        error: 'خطا در دریافت درخواست‌های مرجوعی.',
+      });
+    }
+  },
+);
+
+/*
+  ادمین همه درخواست‌های مرجوعی را می‌بیند.
+*/
+app.get(
+  '/api/admin/return-requests',
+  authenticateToken,
+  requireAdmin,
+  (req, res) => {
+    try {
+      const requestedStatus = cleanText(req.query.status);
+
+      let returnRequests = readReturnRequests();
+
+      if (
+        requestedStatus === 'pending' ||
+        requestedStatus === 'approved' ||
+        requestedStatus === 'rejected'
+      ) {
+        returnRequests = returnRequests.filter((request) => {
+          return request.status === requestedStatus;
+        });
+      }
+
+      const sortedRequests = [...returnRequests].sort(
+        (first, second) => {
+          return (
+            new Date(second.createdAt).getTime() -
+            new Date(first.createdAt).getTime()
+          );
+        },
+      );
+
+      return res.json({
+        success: true,
+        count: sortedRequests.length,
+        data: sortedRequests,
+      });
+    } catch (error) {
+      console.error(
+        'خطا در دریافت درخواست‌های مرجوعی ادمین:',
+        error,
+      );
+
+      return res.status(500).json({
+        success: false,
+        error: 'خطا در دریافت درخواست‌های مرجوعی.',
+      });
+    }
+  },
+);
+
+/*
+  ادمین درخواست مرجوعی را تأیید می‌کند.
+*/
+app.patch(
+  '/api/admin/return-requests/:id/approve',
+  authenticateToken,
+  requireAdmin,
+  (req, res) => {
+    try {
+      const returnRequests = readReturnRequests();
+
+      const requestIndex = returnRequests.findIndex((request) => {
+        return sameValue(request.id, req.params.id);
+      });
+
+      if (requestIndex === -1) {
+        return res.status(404).json({
+          success: false,
+          error: 'درخواست مرجوعی پیدا نشد.',
+        });
+      }
+
+      const currentRequest = returnRequests[requestIndex];
+
+      if (currentRequest.status !== 'pending') {
+        return res.status(400).json({
+          success: false,
+          error:
+            'این درخواست قبلاً بررسی شده و امکان تغییر مجدد آن وجود ندارد.',
+        });
+      }
+
+      const now = new Date().toISOString();
+
+      returnRequests[requestIndex] = {
+        ...currentRequest,
+
+        status: 'approved',
+
+        adminNote: cleanText(
+          req.body.adminNote,
+          'درخواست توسط ادمین تأیید شد.',
+        ),
+
+        decidedAt: now,
+
+        decidedBy: cleanText(
+          req.user.username,
+          'مدیر سیستم',
+        ),
+
+        updatedAt: now,
+      };
+
+      const saved = writeReturnRequests(returnRequests);
+
+      if (!saved) {
+        return res.status(500).json({
+          success: false,
+          error: 'خطا در ذخیره تصمیم ادمین.',
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: 'درخواست مرجوعی تأیید شد.',
+        data: returnRequests[requestIndex],
+      });
+    } catch (error) {
+      console.error('خطا در تأیید مرجوعی:', error);
+
+      return res.status(500).json({
+        success: false,
+        error: 'خطا در تأیید درخواست مرجوعی.',
+      });
+    }
+  },
+);
+
+/*
+  ادمین درخواست مرجوعی را رد می‌کند.
+  دلیل رد برای نماینده نمایش داده می‌شود.
+*/
+app.patch(
+  '/api/admin/return-requests/:id/reject',
+  authenticateToken,
+  requireAdmin,
+  (req, res) => {
+    try {
+      const adminNote = cleanText(req.body.adminNote);
+
+      if (!adminNote) {
+        return res.status(400).json({
+          success: false,
+          error: 'لطفاً دلیل رد درخواست را وارد کنید.',
+        });
+      }
+
+      const returnRequests = readReturnRequests();
+
+      const requestIndex = returnRequests.findIndex((request) => {
+        return sameValue(request.id, req.params.id);
+      });
+
+      if (requestIndex === -1) {
+        return res.status(404).json({
+          success: false,
+          error: 'درخواست مرجوعی پیدا نشد.',
+        });
+      }
+
+      const currentRequest = returnRequests[requestIndex];
+
+      if (currentRequest.status !== 'pending') {
+        return res.status(400).json({
+          success: false,
+          error:
+            'این درخواست قبلاً بررسی شده و امکان تغییر مجدد آن وجود ندارد.',
+        });
+      }
+
+      const now = new Date().toISOString();
+
+      returnRequests[requestIndex] = {
+        ...currentRequest,
+
+        status: 'rejected',
+        adminNote,
+
+        decidedAt: now,
+
+        decidedBy: cleanText(
+          req.user.username,
+          'مدیر سیستم',
+        ),
+
+        updatedAt: now,
+      };
+
+      const saved = writeReturnRequests(returnRequests);
+
+      if (!saved) {
+        return res.status(500).json({
+          success: false,
+          error: 'خطا در ذخیره تصمیم ادمین.',
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: 'درخواست مرجوعی رد شد.',
+        data: returnRequests[requestIndex],
+      });
+    } catch (error) {
+      console.error('خطا در رد مرجوعی:', error);
+
+      return res.status(500).json({
+        success: false,
+        error: 'خطا در رد درخواست مرجوعی.',
+      });
+    }
+  },
+);
+
+// =========================
+// Products API
+// =========================
+
+app.get('/api/products', (req, res) => {
+  try {
+    const products = readProducts();
+
+    return res.json({
+      success: true,
+      count: products.length,
+      data: products,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+app.post('/api/products', (req, res) => {
+  try {
+    const products = readProducts();
+
+    const receivedProducts = Array.isArray(req.body)
+      ? req.body
+      : [req.body];
+
+    const newProducts = receivedProducts.map((product) => {
+      return {
+        id: createRandomId(),
+        name: cleanText(product.name, 'بدون نام'),
+        price: getNumber(product.price),
+        category: cleanText(product.category, 'عمومی'),
+        stock: getNumber(product.stock),
+        description: cleanText(product.description),
+        updatedAt: new Date().toISOString(),
+      };
+    });
+
+    const allProducts = [...products, ...newProducts];
+
+    writeProducts(allProducts);
+    synchronizeWarehouseWithProducts();
+
+    return res.status(201).json({
+      success: true,
+      count: newProducts.length,
+      total: allProducts.length,
+      data: newProducts,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+app.post(
+  '/api/products/upload',
+  upload.single('file'),
+  (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'فایل اکسل انتخاب نشده است.',
+      });
+    }
+
+    try {
+      const workbook = XLSX.readFile(req.file.path);
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+
+      const rows = XLSX.utils.sheet_to_json(sheet, {
+        defval: '',
+      });
+
+      const importedProducts = rows
+        .map((row, index) => {
+          const name = cleanText(
+            getValue(row, [
+              'name',
+              'Name',
+              'نام',
+              'نام محصول',
+              'عنوان',
+              'عنوان محصول',
+            ]),
+            'بدون نام',
+          );
+
+          const price = getNumber(
+            getValue(row, [
+              'price',
+              'Price',
+              'قیمت',
+              'قیمت اصلی',
+              'قیمت (تومان)',
+              'قیمت واحد',
+              'قیمت فروش',
+            ]),
+          );
+
+          const category = cleanText(
+            getValue(row, [
+              'category',
+              'Category',
+              'دسته‌بندی',
+              'دسته بندی',
+            ]),
+            'عمومی',
+          );
+
+          const stock = getNumber(
+            getValue(row, [
+              'stock',
+              'Stock',
+              'موجودی',
+              'تعداد',
+            ]),
+          );
+
+          return {
+            id: `${Date.now()}-${index}-${Math.random()
+              .toString(36)
+              .slice(2, 8)}`,
+            name,
+            price,
+            category,
+            stock,
+            updatedAt: new Date().toISOString(),
+          };
+        })
+        .filter((product) => product.name !== 'بدون نام');
+
+      const existingProducts = readProducts();
+
+      const newProducts = importedProducts.filter(
+        (importedProduct) => {
+          return !existingProducts.some((existingProduct) => {
+            return (
+              existingProduct.name === importedProduct.name &&
+              Number(existingProduct.price) ===
+                Number(importedProduct.price)
+            );
+          });
+        },
+      );
+
+      const duplicateCount =
+        importedProducts.length - newProducts.length;
+
+      const allProducts = [...existingProducts, ...newProducts];
+
+      writeProducts(allProducts);
+      synchronizeWarehouseWithProducts();
+
+      return res.json({
+        success: true,
+        message:
+          newProducts.length > 0
+            ? `${newProducts.length} محصول جدید اضافه شد.`
+            : 'همه محصولات فایل اکسل تکراری بودند.',
+        count: newProducts.length,
+        duplicate: duplicateCount,
+        total: allProducts.length,
+        data: newProducts,
+      });
+    } catch (error) {
+      console.error('Excel upload error:', error);
+
+      return res.status(500).json({
+        success: false,
+        error: `خطا در پردازش اکسل: ${error.message}`,
+      });
+    } finally {
+      if (req.file?.path && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+    }
+  },
+);
+
+
+
+app.put('/api/products/:id', (req, res) => {
+  try {
+    const products = readProducts();
+
+    const productIndex = products.findIndex((product) => {
+      return sameValue(product.id, req.params.id);
+    });
+
+    if (productIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        error: 'محصول یافت نشد.',
+      });
+    }
+
+    const previousProduct = products[productIndex];
+
+    products[productIndex] = {
+      ...previousProduct,
+      ...req.body,
+      id: previousProduct.id,
+      name:
+        req.body.name !== undefined
+          ? cleanText(req.body.name, previousProduct.name)
+          : previousProduct.name,
+      price:
+        req.body.price !== undefined
+          ? getNumber(req.body.price)
+          : getNumber(previousProduct.price),
+      category:
+        req.body.category !== undefined
+          ? cleanText(req.body.category, 'عمومی')
+          : previousProduct.category || 'عمومی',
+      stock:
+        req.body.stock !== undefined
+          ? getNumber(req.body.stock)
+          : getNumber(previousProduct.stock),
+      description:
+        req.body.description !== undefined
+          ? cleanText(req.body.description)
+          : previousProduct.description || '',
+      updatedAt: new Date().toISOString(),
+    };
+
+    writeProducts(products);
+
+    const warehouse = readWarehouse();
+
+    const warehouseIndex = warehouse.findIndex((item) => {
+      return sameValue(item.productId, previousProduct.id);
+    });
+
+    if (warehouseIndex !== -1) {
+      warehouse[warehouseIndex] = {
+        ...warehouse[warehouseIndex],
+        productName: products[productIndex].name,
+        category: products[productIndex].category,
+        quantity:
+          req.body.stock !== undefined
+            ? getNumber(req.body.stock)
+            : getNumber(warehouse[warehouseIndex].quantity),
+        updatedAt: new Date().toISOString(),
+      };
+
+      writeWarehouse(warehouse);
+    } else {
+      synchronizeWarehouseWithProducts();
+    }
+
+    return res.json({
+      success: true,
+      data: products[productIndex],
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+app.delete('/api/products/:id', (req, res) => {
+  try {
+    const products = readProducts();
+
+    const filteredProducts = products.filter((product) => {
+      return !sameValue(product.id, req.params.id);
+    });
+
+    if (filteredProducts.length === products.length) {
+      return res.status(404).json({
+        success: false,
+        error: 'محصول یافت نشد.',
+      });
+    }
+
+    writeProducts(filteredProducts);
+
+    const warehouse = readWarehouse().filter((item) => {
+      return !sameValue(item.productId, req.params.id);
+    });
+
+    writeWarehouse(warehouse);
+
+    const representativeWarehouses =
+      readRepresentativeWarehouses().map((warehouseItem) => {
+        return {
+          ...warehouseItem,
+          items: Array.isArray(warehouseItem.items)
+            ? warehouseItem.items.filter((item) => {
+                return !sameValue(item.productId, req.params.id);
+              })
+            : [],
+        };
+      });
+
+    writeRepresentativeWarehouses(representativeWarehouses);
+
+    return res.json({
+      success: true,
+      message: 'محصول حذف شد.',
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+// =========================
+// Central warehouse API
+// =========================
+
+app.get('/api/warehouse', (req, res) => {
+  try {
+    const warehouse = synchronizeWarehouseWithProducts();
+
+    return res.json({
+      success: true,
+      count: warehouse.length,
+      data: warehouse,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'خطا در دریافت موجودی انبار.',
+    });
+  }
+});
+
+app.get('/api/warehouse/movements', (req, res) => {
+  try {
+    const movements = readWarehouseMovements();
+
+    const sortedMovements = [...movements].sort(
+      (first, second) => {
+        return (
+          new Date(second.createdAt).getTime() -
+          new Date(first.createdAt).getTime()
+        );
+      },
+    );
+
+    return res.json({
+      success: true,
+      count: sortedMovements.length,
+      data: sortedMovements,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'خطا در دریافت گردش انبار.',
+    });
+  }
+});
+
+app.post('/api/warehouse/movements', (req, res) => {
+  try {
+    const productId = normalizeValue(req.body.productId);
+    const type = req.body.type === 'out' ? 'out' : 'in';
+    const quantity = getPositiveNumber(req.body.quantity);
+
+    const minimumStock =
+      req.body.minimumStock !== undefined
+        ? getNumber(req.body.minimumStock)
+        : 5;
+
+    const reason = cleanText(
+      req.body.reason,
+      type === 'in' ? 'ورود کالا' : 'خروج کالا',
+    );
+
+    const description = cleanText(req.body.description);
+
+    if (!productId) {
+      return res.status(400).json({
+        success: false,
+        error: 'لطفاً محصول را انتخاب کنید.',
+      });
+    }
+
+    if (!quantity) {
+      return res.status(400).json({
+        success: false,
+        error: 'تعداد باید بیشتر از صفر باشد.',
+      });
+    }
+
+    const products = readProducts();
+
+    const productIndex = products.findIndex((product) => {
+      return sameValue(product.id, productId);
+    });
+
+    if (productIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        error: 'محصول انتخاب‌شده پیدا نشد.',
+      });
+    }
+
+    const product = products[productIndex];
+    const warehouse = synchronizeWarehouseWithProducts();
+
+    let warehouseIndex = warehouse.findIndex((item) => {
+      return sameValue(item.productId, productId);
+    });
+
+    if (warehouseIndex === -1) {
+      warehouse.push(createWarehouseItem(product, minimumStock));
+
+      warehouseIndex = warehouse.length - 1;
+    }
+
+    const currentWarehouseItem = warehouse[warehouseIndex];
+
+    const currentQuantity = getNumber(
+      currentWarehouseItem.quantity,
+    );
+
+    if (type === 'out' && quantity > currentQuantity) {
+      return res.status(400).json({
+        success: false,
+        error: `موجودی کافی نیست. موجودی فعلی این کالا: ${currentQuantity}`,
+      });
+    }
+
+    const nextQuantity =
+      type === 'in'
+        ? currentQuantity + quantity
+        : currentQuantity - quantity;
+
+    warehouse[warehouseIndex] = {
+      ...currentWarehouseItem,
+      productId: String(product.id),
+      productName: cleanText(product.name, 'بدون نام'),
+      category: cleanText(product.category, 'عمومی'),
+      quantity: nextQuantity,
+      minimumStock: Math.max(0, getNumber(minimumStock)),
+      updatedAt: new Date().toISOString(),
+    };
+
+    products[productIndex] = {
+      ...product,
+      stock: nextQuantity,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const movements = readWarehouseMovements();
+
+    const newMovement = {
+      id: createRandomId(),
+      productId: String(product.id),
+      productName: cleanText(product.name, 'بدون نام'),
+      type,
+      quantity,
+      reason,
+      description,
+      createdAt: new Date().toISOString(),
+    };
+
+    movements.push(newMovement);
+
+    writeWarehouse(warehouse);
+    writeWarehouseMovements(movements);
+    writeProducts(products);
+
+    return res.status(201).json({
+      success: true,
+      message:
+        type === 'in'
+          ? 'ورود کالا با موفقیت ثبت شد.'
+          : 'خروج کالا با موفقیت ثبت شد.',
+      data: {
+        movement: newMovement,
+        inventory: warehouse[warehouseIndex],
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'خطا در ثبت گردش انبار.',
+    });
+  }
+});
+
+// =========================
+// Representatives API
+// =========================
+
+app.get('/api/representatives', (req, res) => {
+  try {
+    const representatives = readRepresentatives();
+
+    return res.json({
+      success: true,
+      count: representatives.length,
+      data: representatives,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+app.post('/api/representatives', (req, res) => {
+  try {
+    const representatives = readRepresentatives();
+
+    const name = cleanText(req.body.name);
+    const phone = cleanText(req.body.phone);
+    const city = cleanText(req.body.city);
+    const code = cleanText(req.body.code);
+
+    const startDate = normalizeJalaliDate(
+      req.body.startDate || '',
+    );
+
+    const depositAmount = getNumber(req.body.depositAmount);
+    const guaranteeCheck = getNumber(req.body.guaranteeCheck);
+
+    if (!name) {
+      return res.status(400).json({
+        success: false,
+        error: 'نام نماینده الزامی است.',
+      });
+    }
+
+    if (!code) {
+      return res.status(400).json({
+        success: false,
+        error: 'کد نمایندگی الزامی است.',
+      });
+    }
+
+    if (!isValidJalaliDate(startDate)) {
+      return res.status(400).json({
+        success: false,
+        error:
+          'تاریخ قرارداد باید به صورت شمسی و با فرمت 1405/07/02 باشد.',
+      });
+    }
+
+    const duplicateCode = representatives.some(
+      (representative) => {
+        return sameValue(representative.code, code);
+      },
+    );
+
+    if (duplicateCode) {
+      return res.status(400).json({
+        success: false,
+        error: 'این کد نمایندگی قبلاً ثبت شده است.',
+      });
+    }
+
+    const newRepresentative = {
+      id: getNextRepresentativeId(representatives),
+      name,
+      phone,
+      city,
+      code,
+      orders: getNumber(req.body.orders),
+      status:
+        req.body.status === 'inactive' ? 'inactive' : 'active',
+      startDate,
+      depositAmount: String(depositAmount),
+      guaranteeCheck: String(guaranteeCheck),
+      totalFinancialCommitment: String(
+        depositAmount + guaranteeCheck,
+      ),
+      shipmentsCount: getNumber(req.body.shipmentsCount),
+      storeItemsCount: getNumber(req.body.storeItemsCount),
+      storeItemsTotalValue: getNumber(
+        req.body.storeItemsTotalValue,
+      ),
+      returnRequestsCount: 0,
+      last10DaysSales: getNumber(req.body.last10DaysSales),
+      averageSales: getNumber(req.body.averageSales),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    representatives.push(newRepresentative);
+
+    writeRepresentatives(representatives);
+
+    return res.status(201).json({
+      success: true,
+      message: 'نماینده با موفقیت ثبت شد.',
+      data: newRepresentative,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'خطا در ثبت نماینده.',
+    });
+  }
+});
+
+app.put('/api/representatives/:id', (req, res) => {
+  try {
+    const representatives = readRepresentatives();
+
+    const representativeIndex = representatives.findIndex(
+      (representative) => {
+        return sameValue(representative.id, req.params.id);
+      },
+    );
+
+    if (representativeIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        error: 'نماینده یافت نشد.',
+      });
+    }
+
+    const currentRepresentative =
+      representatives[representativeIndex];
+
+    const newCode = cleanText(
+      req.body.code ?? currentRepresentative.code,
+    );
+
+    if (newCode) {
+      const duplicateCode = representatives.some(
+        (representative) => {
+          return (
+            !sameValue(representative.id, req.params.id) &&
+            sameValue(representative.code, newCode)
+          );
+        },
+      );
+
+      if (duplicateCode) {
+        return res.status(400).json({
+          success: false,
+          error:
+            'این کد نمایندگی متعلق به نماینده دیگری است.',
+        });
+      }
+    }
+
+    const nextDepositAmount =
+      req.body.depositAmount !== undefined
+        ? getNumber(req.body.depositAmount)
+        : getNumber(currentRepresentative.depositAmount);
+
+    const nextGuaranteeCheck =
+      req.body.guaranteeCheck !== undefined
+        ? getNumber(req.body.guaranteeCheck)
+        : getNumber(currentRepresentative.guaranteeCheck);
+
+    const nextStartDate =
+      req.body.startDate !== undefined
+        ? normalizeJalaliDate(req.body.startDate)
+        : currentRepresentative.startDate || '';
+
+    if (nextStartDate && !isValidJalaliDate(nextStartDate)) {
+      return res.status(400).json({
+        success: false,
+        error:
+          'تاریخ قرارداد باید به صورت شمسی و با فرمت 1405/07/02 باشد.',
+      });
+    }
+
+    representatives[representativeIndex] = {
+      ...currentRepresentative,
+      ...req.body,
+      id: currentRepresentative.id,
+      code: newCode || currentRepresentative.code || '',
+      startDate: nextStartDate,
+      depositAmount: String(nextDepositAmount),
+      guaranteeCheck: String(nextGuaranteeCheck),
+      totalFinancialCommitment: String(
+        nextDepositAmount + nextGuaranteeCheck,
+      ),
+      orders:
+        req.body.orders !== undefined
+          ? getNumber(req.body.orders)
+          : getNumber(currentRepresentative.orders),
+      shipmentsCount:
+        req.body.shipmentsCount !== undefined
+          ? getNumber(req.body.shipmentsCount)
+          : getNumber(currentRepresentative.shipmentsCount),
+      storeItemsCount:
+        req.body.storeItemsCount !== undefined
+          ? getNumber(req.body.storeItemsCount)
+          : getNumber(currentRepresentative.storeItemsCount),
+      storeItemsTotalValue:
+        req.body.storeItemsTotalValue !== undefined
+          ? getNumber(req.body.storeItemsTotalValue)
+          : getNumber(currentRepresentative.storeItemsTotalValue),
+      last10DaysSales:
+        req.body.last10DaysSales !== undefined
+          ? getNumber(req.body.last10DaysSales)
+          : getNumber(currentRepresentative.last10DaysSales),
+      averageSales:
+        req.body.averageSales !== undefined
+          ? getNumber(req.body.averageSales)
+          : getNumber(currentRepresentative.averageSales),
+      returnRequestsCount:
+        currentRepresentative.returnRequestsCount ?? 0,
+      status:
+        req.body.status === 'inactive'
+          ? 'inactive'
+          : req.body.status === 'active'
+            ? 'active'
+            : currentRepresentative.status || 'active',
+      updatedAt: new Date().toISOString(),
+    };
+
+    writeRepresentatives(representatives);
+
+    return res.json({
+      success: true,
+      data: representatives[representativeIndex],
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'خطا در ویرایش نماینده.',
+    });
+  }
+});
+
+app.delete('/api/representatives/:id', (req, res) => {
+  try {
+    const representatives = readRepresentatives();
+
+    const filteredRepresentatives = representatives.filter(
+      (representative) => {
+        return !sameValue(representative.id, req.params.id);
+      },
+    );
+
+    if (filteredRepresentatives.length === representatives.length) {
+      return res.status(404).json({
+        success: false,
+        error: 'نماینده یافت نشد.',
+      });
+    }
+
+    writeRepresentatives(filteredRepresentatives);
+
+    const filteredRepresentativeWarehouses =
+      readRepresentativeWarehouses().filter((warehouse) => {
+        return !sameValue(
+          warehouse.representativeId,
+          req.params.id,
+        );
+      });
+
+    writeRepresentativeWarehouses(
+      filteredRepresentativeWarehouses,
+    );
+
+    /*
+      درخواست‌های مرجوعی همان نماینده هم حذف می‌شوند
+      تا دادهٔ بدون نماینده باقی نماند.
+    */
+    const filteredReturnRequests = readReturnRequests().filter(
+      (returnRequest) => {
+        return !sameValue(
+          returnRequest.representativeId,
+          req.params.id,
+        );
+      },
+    );
+
+    writeReturnRequests(filteredReturnRequests);
+
+    return res.json({
+      success: true,
+      message: 'نماینده و اطلاعات وابسته به او حذف شد.',
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+// =========================
+// Representative warehouse API
+// =========================
+
+app.get('/api/representatives/:id/warehouse', (req, res) => {
+  try {
+    const representativeId = normalizeValue(req.params.id);
+
+    const representatives = readRepresentatives();
+
+    const representative = representatives.find((item) => {
+      return sameValue(item.id, representativeId);
+    });
+
+    if (!representative) {
+      return res.status(404).json({
+        success: false,
+        error: 'نماینده پیدا نشد.',
+      });
+    }
+
+    const warehouses = readRepresentativeWarehouses();
+
+    let warehouse = warehouses.find((item) => {
+      return sameValue(
+        item.representativeId,
+        representativeId,
+      );
+    });
+
+    if (!warehouse) {
+      warehouse = createRepresentativeWarehouse(
+        representativeId,
+      );
+
+      warehouses.push(warehouse);
+
+      writeRepresentativeWarehouses(warehouses);
+    }
+
+    warehouse.items = Array.isArray(warehouse.items)
+      ? warehouse.items
+      : [];
+
+    warehouse.movements = Array.isArray(warehouse.movements)
+      ? warehouse.movements
+      : [];
+
+    warehouse.movements = [...warehouse.movements].sort(
+      (first, second) => {
+        return (
+          new Date(second.createdAt).getTime() -
+          new Date(first.createdAt).getTime()
+        );
+      },
+    );
+
+    return res.json({
+      success: true,
+      data: warehouse,
+    });
+  } catch (error) {
+    console.error('خطا در دریافت انبار نماینده:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'خطا در دریافت انبار نماینده.',
+    });
+  }
+});
+
+app.post(
+  '/api/representatives/:id/warehouse/movements',
+  (req, res) => {
+    try {
+      const representativeId = normalizeValue(req.params.id);
+
+      const representatives = readRepresentatives();
+
+      const representative = representatives.find((item) => {
+        return sameValue(item.id, representativeId);
+      });
+
+      if (!representative) {
+        return res.status(404).json({
+          success: false,
+          error: 'نماینده پیدا نشد.',
+        });
+      }
+
+      const type = req.body.type === 'out' ? 'out' : 'in';
+
+      const productId = normalizeValue(req.body.productId);
+
+      const quantity = getPositiveNumber(req.body.quantity);
+
+      const unitPrice =
+        req.body.unitPrice !== undefined
+          ? getNumber(req.body.unitPrice)
+          : 0;
+
+      const minimumStock =
+        req.body.minimumStock !== undefined
+          ? getNumber(req.body.minimumStock)
+          : 5;
+
+      const reason = cleanText(
+        req.body.reason,
+        type === 'in'
+          ? 'ارسال کالا به نماینده'
+          : 'خروج کالا از انبار نماینده',
+      );
+
+      const description = cleanText(req.body.description);
+
+      if (!productId) {
+        return res.status(400).json({
+          success: false,
+          error: 'محصول انتخاب نشده است.',
+        });
+      }
+
+      if (!quantity) {
+        return res.status(400).json({
+          success: false,
+          error: 'تعداد باید بیشتر از صفر باشد.',
+        });
+      }
+
+      if (unitPrice < 0 || minimumStock < 0) {
+        return res.status(400).json({
+          success: false,
+          error:
+            'قیمت و حداقل موجودی نمی‌توانند منفی باشند.',
+        });
+      }
+
+      const products = readProducts();
+
+      const product = products.find((item) => {
+        return sameValue(item.id, productId);
+      });
+
+      if (!product) {
+        return res.status(404).json({
+          success: false,
+          error: 'محصول انتخاب‌شده پیدا نشد.',
+        });
+      }
+
+      const warehouses = readRepresentativeWarehouses();
+
+      let warehouseIndex = warehouses.findIndex((warehouse) => {
+        return sameValue(
+          warehouse.representativeId,
+          representativeId,
+        );
+      });
+
+      if (warehouseIndex === -1) {
+        warehouses.push(
+          createRepresentativeWarehouse(representativeId),
+        );
+
+        warehouseIndex = warehouses.length - 1;
+      }
+
+      const warehouse = warehouses[warehouseIndex];
+
+      warehouse.items = Array.isArray(warehouse.items)
+        ? warehouse.items
+        : [];
+
+      warehouse.movements = Array.isArray(warehouse.movements)
+        ? warehouse.movements
+        : [];
+
+      let itemIndex = warehouse.items.findIndex((item) => {
+        return sameValue(item.productId, productId);
+      });
+
+      if (type === 'in') {
+        const selectedUnitPrice =
+          unitPrice > 0 ? unitPrice : getNumber(product.price);
+
+        if (itemIndex === -1) {
+          const newItem = {
+            id: createRandomId(),
+            productId: String(product.id),
+            productName: cleanText(product.name, 'بدون نام'),
+            quantity,
+            unitPrice: selectedUnitPrice,
+            totalPrice: quantity * selectedUnitPrice,
+            minimumStock,
+            status: getRepresentativeWarehouseStatus(
+              quantity,
+              minimumStock,
+            ),
+            lastUpdated: new Date().toISOString(),
+          };
+
+          warehouse.items.push(newItem);
+
+          itemIndex = warehouse.items.length - 1;
+        } else {
+          const currentItem = warehouse.items[itemIndex];
+
+          const nextQuantity =
+            getNumber(currentItem.quantity) + quantity;
+
+          const nextUnitPrice =
+            unitPrice > 0
+              ? unitPrice
+              : getNumber(currentItem.unitPrice) ||
+                getNumber(product.price);
+
+          warehouse.items[itemIndex] = {
+            ...currentItem,
+            productId: String(product.id),
+            productName: cleanText(product.name, 'بدون نام'),
+            quantity: nextQuantity,
+            unitPrice: nextUnitPrice,
+            totalPrice: nextQuantity * nextUnitPrice,
+            minimumStock,
+            status: getRepresentativeWarehouseStatus(
+              nextQuantity,
+              minimumStock,
+            ),
+            lastUpdated: new Date().toISOString(),
+          };
+        }
+      } else {
+        if (itemIndex === -1) {
+          return res.status(400).json({
+            success: false,
+            error: 'این کالا در انبار نماینده وجود ندارد.',
+          });
+        }
+
+        const currentItem = warehouse.items[itemIndex];
+
+        const currentQuantity = getNumber(currentItem.quantity);
+
+        if (quantity > currentQuantity) {
+          return res.status(400).json({
+            success: false,
+            error: `موجودی کافی نیست. موجودی فعلی: ${currentQuantity}`,
+          });
+        }
+
+        const nextQuantity = currentQuantity - quantity;
+
+        warehouse.items[itemIndex] = {
+          ...currentItem,
+          quantity: nextQuantity,
+          totalPrice:
+            nextQuantity * getNumber(currentItem.unitPrice),
+          status: getRepresentativeWarehouseStatus(
+            nextQuantity,
+            currentItem.minimumStock,
+          ),
+          lastUpdated: new Date().toISOString(),
+        };
+      }
+
+      const savedItem = warehouse.items[itemIndex];
+
+      const newMovement = {
+        id: createRandomId(),
+        representativeId: String(representative.id),
+        productId: String(product.id),
+        productName: cleanText(product.name, 'بدون نام'),
+        type,
+        quantity,
+        unitPrice: getNumber(savedItem?.unitPrice),
+        reason,
+        description,
+        createdAt: new Date().toISOString(),
+      };
+
+      warehouse.movements.unshift(newMovement);
+
+      warehouse.updatedAt = new Date().toISOString();
+
+      warehouses[warehouseIndex] = warehouse;
+
+      writeRepresentativeWarehouses(warehouses);
+
+      updateRepresentativeWarehouseSummary(
+        representativeId,
+        warehouse,
+      );
+
+      return res.status(201).json({
+        success: true,
+        message:
+          type === 'in'
+            ? 'کالا با موفقیت به انبار نماینده ارسال شد.'
+            : 'خروج کالا از انبار نماینده ثبت شد.',
+        data: {
+          item: savedItem,
+          movement: newMovement,
+        },
+      });
+    } catch (error) {
+      console.error('خطا در ثبت گردش انبار نماینده:', error);
+
+      return res.status(500).json({
+        success: false,
+        error:
+          error.message || 'خطا در ثبت گردش انبار نماینده.',
+      });
+    }
+  },
+);
+
+// =========================
+// Shipments API
+// =========================
+
+app.get('/api/shipments', (req, res) => {
+  try {
+    const shipments = readShipments();
+
+    const representatives = readRepresentatives();
+
+    const completedShipments = shipments.map((shipment) => {
+      return fillShipmentRepresentative(shipment, representatives);
+    });
+
+    const hasChanges = completedShipments.some(
+      (shipment, index) => {
+        return (
+          JSON.stringify(shipment) !==
+          JSON.stringify(shipments[index])
+        );
+      },
+    );
+
+    if (hasChanges) {
+      writeShipments(completedShipments);
+    }
+
+    return res.json({
+      success: true,
+      count: completedShipments.length,
+      data: completedShipments,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+app.post('/api/shipments', (req, res) => {
+  try {
+    const shipments = readShipments();
+
+    const representatives = readRepresentatives();
+
+    const receiver = cleanText(req.body.receiver);
+    const warehouse = cleanText(req.body.warehouse);
+
+    const shipmentDate = normalizeJalaliDate(
+      req.body.shipmentDate || '',
+    );
+
+    const representativeId = normalizeValue(
+      req.body.representativeId,
+    );
+
+    const representativeCode = normalizeValue(
+      req.body.representativeCode,
+    );
+
+    if (!receiver || !warehouse) {
+      return res.status(400).json({
+        success: false,
+        error: 'گیرنده و انبار الزامی هستند.',
+      });
+    }
+
+    if (!isValidJalaliDate(shipmentDate)) {
+      return res.status(400).json({
+        success: false,
+        error:
+          'تاریخ ارسال باید به صورت شمسی و با فرمت 1405/07/02 باشد.',
+      });
+    }
+
+    if (!representativeId && !representativeCode) {
+      return res.status(400).json({
+        success: false,
+        error: 'لطفاً یک نماینده انتخاب کنید.',
+      });
+    }
+
+    const representative = representatives.find((item) => {
+      return (
+        sameValue(item.id, representativeId) ||
+        sameValue(item.code, representativeCode)
+      );
+    });
+
+    if (!representative) {
+      return res.status(400).json({
+        success: false,
+        error: 'نماینده انتخاب‌شده پیدا نشد.',
+      });
+    }
+
+    const newShipment = {
+      id: createRandomId(),
+      receiver,
+      warehouse,
+      representativeId: String(representative.id || '').trim(),
+      representativeName: String(
+        representative.name || '',
+      ).trim(),
+      representativeCode: String(
+        representative.code || '',
+      ).trim(),
+      representativeCity: String(
+        representative.city || '',
+      ).trim(),
+      shipmentDate,
+      itemsCount: getNumber(req.body.itemsCount),
+      totalItems: getNumber(req.body.totalItems),
+      status:
+        req.body.status === 'sent' ||
+        req.body.status === 'delivered'
+          ? req.body.status
+          : 'pending',
+      excelFileName: cleanText(req.body.excelFileName),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    shipments.push(newShipment);
+
+    const saved = writeShipments(shipments);
+
+    if (!saved) {
+      return res.status(500).json({
+        success: false,
+        error: 'خطا در ذخیره‌سازی بار.',
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: 'بار با موفقیت ذخیره شد.',
+      data: newShipment,
+    });
+  } catch (error) {
+    console.error('خطا در ثبت بار:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'خطا در ثبت بار.',
+    });
+  }
+});
+
+app.delete('/api/shipments/:id', (req, res) => {
+  try {
+    const shipments = readShipments();
+
+    const filteredShipments = shipments.filter((shipment) => {
+      return !sameValue(shipment.id, req.params.id);
+    });
+
+    if (filteredShipments.length === shipments.length) {
+      return res.status(404).json({
+        success: false,
+        error: 'بار موردنظر پیدا نشد.',
+      });
+    }
+
+    writeShipments(filteredShipments);
+
+    return res.json({
+      success: true,
+      message: 'بار با موفقیت حذف شد.',
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+// =========================
+// Representative files API
+// =========================
+
+const getRepresentativeFilePath = (representativeId, fileName) => {
+  const representativeDirectory = path.resolve(
+    REPRESENTATIVES_DIR,
+    String(representativeId),
+  );
+
+  const filePath = path.resolve(
+    representativeDirectory,
+    String(fileName),
+  );
+
+  if (!filePath.startsWith(`${representativeDirectory}${path.sep}`)) {
+    return null;
+  }
+
+  return filePath;
+};
+
+app.get('/api/representatives/:id/files', (req, res) => {
+  try {
+    const representativeId = req.params.id;
+
+    const representativeDirectory = path.join(
+      REPRESENTATIVES_DIR,
+      representativeId,
+    );
+
+    if (!fs.existsSync(representativeDirectory)) {
+      return res.json({
+        success: true,
+        files: [],
+      });
+    }
+
+    const invalidFiles = [
+      'favicon.svg',
+      'favicon.ico',
+      '.DS_Store',
+      'Thumbs.db',
+      'desktop.ini',
+    ];
+
+    const allowedExtensions = [
+      'jpg',
+      'jpeg',
+      'png',
+      'gif',
+      'webp',
+      'pdf',
+      'doc',
+      'docx',
+      'xls',
+      'xlsx',
+      'zip',
+      'rar',
+    ];
+
+    const files = fs
+      .readdirSync(representativeDirectory)
+      .filter((fileName) => {
+        const extension =
+          fileName.split('.').pop()?.toLowerCase() || '';
+
+        return (
+          !fileName.startsWith('.') &&
+          !fileName.endsWith('.tmp') &&
+          !invalidFiles.includes(fileName) &&
+          allowedExtensions.includes(extension)
+        );
+      })
+      .map((fileName, index) => {
+        const filePath = path.join(
+          representativeDirectory,
+          fileName,
+        );
+
+        const stats = fs.statSync(filePath);
+
+        return {
+          id: `${representativeId}-${index}-${fileName}`,
+          name: fileName,
+          size: `${(stats.size / 1024).toFixed(1)} KB`,
+          uploadedAt: new Date(
+            stats.mtime,
+          ).toLocaleDateString('fa-IR'),
+          representativeId,
+          icon: getFileIcon(fileName),
+        };
+      });
+
+    return res.json({
+      success: true,
+      files,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+app.get(
+  '/api/representatives/:repId/files/:fileName/view',
+  (req, res) => {
+    try {
+      const filePath = getRepresentativeFilePath(
+        req.params.repId,
+        req.params.fileName,
+      );
+
+      if (!filePath) {
+        return res.status(400).json({
+          success: false,
+          error: 'مسیر فایل نامعتبر است.',
+        });
+      }
+
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({
+          success: false,
+          error: 'فایل یافت نشد.',
+        });
+      }
+
+      return res.sendFile(filePath);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  },
+);
+
+app.get(
+  '/api/representatives/:repId/files/:fileName/download',
+  (req, res) => {
+    try {
+      const filePath = getRepresentativeFilePath(
+        req.params.repId,
+        req.params.fileName,
+      );
+
+      if (!filePath) {
+        return res.status(400).json({
+          success: false,
+          error: 'مسیر فایل نامعتبر است.',
+        });
+      }
+
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({
+          success: false,
+          error: 'فایل یافت نشد.',
+        });
+      }
+
+      return res.download(filePath, req.params.fileName);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  },
+);
+
+app.delete(
+  '/api/representatives/:repId/files/:fileName',
+  (req, res) => {
+    try {
+      const filePath = getRepresentativeFilePath(
+        req.params.repId,
+        req.params.fileName,
+      );
+
+      if (!filePath) {
+        return res.status(400).json({
+          success: false,
+          error: 'مسیر فایل نامعتبر است.',
+        });
+      }
+
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({
+          success: false,
+          error: 'فایل یافت نشد.',
+        });
+      }
+
+      fs.unlinkSync(filePath);
+
+      return res.json({
+        success: true,
+        message: 'فایل حذف شد.',
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  },
+);
+
+// =========================
+// Local IP helpers
+// =========================
+
+function getLocalIPs() {
+  const interfaces = os.networkInterfaces();
+
+  const ips = [];
+
+  for (const networkInterface of Object.values(interfaces)) {
+    if (!networkInterface) {
+      continue;
+    }
+
+    for (const config of networkInterface) {
+      if (
+        config.family === 'IPv4' &&
+        !config.internal &&
+        (config.address.startsWith('192.168.') ||
+          config.address.startsWith('10.'))
+      ) {
+        ips.push(config.address);
+      }
+    }
+  }
+
+  return ips.length > 0 ? ips : ['localhost'];
+}
+
+// =========================
+// Start server
+// =========================
+
+async function startServer() {
+  await createDefaultAdmin();
+
+  app.listen(PORT, '0.0.0.0', () => {
+    const localIPs = getLocalIPs();
+
+    console.log('\n🚀 ====================================');
+    console.log('✅ Backend is running!');
+    console.log('🚀 ====================================');
+    console.log(`📍 Local: http://localhost:${PORT}`);
+
+    if (localIPs[0] !== 'localhost') {
+      console.log(`📍 Network: http://${localIPs[0]}:${PORT}`);
+    }
+
+    console.log(
+      `📍 Health: http://localhost:${PORT}/api/health`,
+    );
+
+    console.log(
+      `🔐 Admin login: http://localhost:${PORT}/api/auth/admin/login`,
+    );
+
+    console.log(
+      `↩️ Return requests: http://localhost:${PORT}/api/admin/return-requests`,
+    );
+
+    console.log('🚀 ====================================\n');
+  });
+}
+
+startServer().catch((error) => {
+  console.error('خطا در اجرای سرور:', error);
+  process.exit(1);
+});
